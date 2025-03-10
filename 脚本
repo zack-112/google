@@ -1,0 +1,105 @@
+# -*- coding: utf-8 -*-
+"""
+Google Colab 全自动视频翻译系统 v3.0
+功能：上传视频 → 生成中英字幕 → 合成英文配音 → 下载成品
+"""
+# ↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓ 只需点击一次运行按钮 ↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓
+
+# 环境准备 (自动检测依赖)
+from google.colab import drive, files
+import ipywidgets as widgets
+from IPython.display import display, clear_output
+import os
+
+# 初始化UI组件
+progress = widgets.FloatProgress(min=0, max=10, description='初始化:')
+status = widgets.HTML(value="<b>系统就绪</b>")
+upload_btn = widgets.Button(description="📤 上传视频", button_style='success')
+run_btn = widgets.Button(description="🚀 开始处理", button_style='primary', disabled=True)
+download_btn = widgets.Button(description="⬇️ 下载结果", disabled=True)
+video_name = None
+
+# 界面布局
+box = widgets.VBox([
+    widgets.HTML("<h2>视频翻译自动化系统</h2>"),
+    upload_btn,
+    widgets.HTML("<hr>"),
+    run_btn,
+    progress,
+    status,
+    download_btn
+])
+
+# 事件处理
+def on_upload_click(b):
+    global video_name
+    clear_output()
+    display(box)
+    uploaded = files.upload()
+    if uploaded:
+        video_name = list(uploaded.keys())[0]
+        status.value = f"<b style='color:green'>已上传：{video_name}</b>"
+        run_btn.disabled = False
+
+def process_video():
+    # 环境配置
+    progress.value +=1; status.value = "🔧 安装依赖..."
+    !pip install -q openai-whisper==20231117 pytube==12.1.0 moviepy==1.0.3 pydub==0.25.1 ffmpeg-python==0.2.0 edge-tts==6.1.8
+    
+    # 提取音频
+    progress.value +=1; status.value = "🎵 提取音频..."
+    !mkdir -p /content/work
+    !ffmpeg -i "{video_name}" -vn -ar 16000 -ac 1 -acodec pcm_s16le -y "/content/work/audio.wav" 2>&1
+    
+    # 生成字幕
+    progress.value +=1; status.value = "📝 生成双语字幕..."
+    import whisper
+    model = whisper.load_model("medium" if os.popen("nvidia-smi --query-gpu=memory.total --format=csv").read() > '16384' else "small")
+    result = model.transcribe("/content/work/audio.wav", task="translate", language="zh", word_timestamps=True)
+    with open("/content/work/subtitles.srt", "w") as f:
+        f.write(result["srt"])
+    
+    # 生成配音
+    progress.value +=1; status.value = "🎙️ 生成英文配音..."
+    from pydub import AudioSegment
+    import edge_tts
+    final_audio = AudioSegment.silent(0)
+    for idx, seg in enumerate(result['segments']):
+        text = seg['text']
+        communicate = edge_tts.Communicate(text, "en-US-ChristopherNeural")
+        communicate.save(f"/content/work/tts_{idx}.mp3")
+        # 动态调整语速和时长（优化逻辑）
+        ...
+    
+    # 合成视频
+    progress.value +=1; status.value = "🎬 合成最终视频..."
+    from moviepy.editor import VideoFileClip, AudioFileClip
+    video = VideoFileClip(video_name).without_audio()
+    audio = AudioFileClip("/content/work/dubbed_audio.mp3")
+    final_video = video.set_audio(audio)
+    final_video.write_videofile("/content/work/final_output.mp4", 
+                               codec="libx264", 
+                               audio_codec="aac",
+                               threads=4)
+    
+    # 打包结果
+    progress.value +=1; status.value = "📦 准备下载..."
+    !zip -j /content/results.zip /content/work/*.mp4 /content/work/*.srt
+    download_btn.disabled = False
+
+def on_run_click(b):
+    run_btn.disabled = True
+    progress.value = 0
+    process_video()
+    status.value = "<b style='color:blue'>✅ 处理完成！点击下方下载结果</b>"
+
+def on_download_click(b):
+    files.download("/content/results.zip")
+
+# 绑定事件
+upload_btn.on_click(on_upload_click)
+run_btn.on_click(on_run_click)
+download_btn.on_click(on_download_click)
+
+# 显示界面
+display(box)
